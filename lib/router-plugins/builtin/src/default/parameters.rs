@@ -22,6 +22,7 @@ struct Parameters {
     disk_cache_hit_weight: Option<f64>,
     shared_cache_multiplier: Option<f64>,
     router_temperature: Option<f64>,
+    prefill_context_cost_tokens: Option<f64>,
 }
 
 /// Only the startup values consumed by the default scorer and picker.
@@ -35,6 +36,9 @@ pub(super) struct PolicyParameters {
     pub(super) disk_cache_hit_weight: f64,
     pub(super) shared_cache_multiplier: f64,
     pub(super) router_temperature: f64,
+    /// Prompt depth, in tokens, at which computing one prefill token costs twice as much as
+    /// at the start of the prompt. Zero keeps prefill cost independent of depth.
+    pub(super) prefill_context_cost_tokens: f64,
 }
 
 impl From<&SelectionConfig> for PolicyParameters {
@@ -60,6 +64,10 @@ impl Parameters {
             ("disk_cache_hit_weight", self.disk_cache_hit_weight),
             ("shared_cache_multiplier", self.shared_cache_multiplier),
             ("router_temperature", self.router_temperature),
+            (
+                "prefill_context_cost_tokens",
+                self.prefill_context_cost_tokens,
+            ),
         ] {
             if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
                 return Err(WorkerSelectionPolicyProviderError::new(format!(
@@ -107,6 +115,9 @@ impl Parameters {
                 ))
             }),
             router_temperature: self.router_temperature.unwrap_or(config.router_temperature),
+            // No router-level setting backs this term, so it stays off unless the policy
+            // parameters name it.
+            prefill_context_cost_tokens: self.prefill_context_cost_tokens.unwrap_or(0.0),
         }
     }
 }

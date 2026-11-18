@@ -976,9 +976,96 @@ fn startup_policy_parameters_match_the_default_factory_for_every_role() {
                     expected.parameters(),
                     "role={role:?} conditional_disagg={conditional_disagg_enabled}"
                 );
-                assert_eq!(startup.len(), 8);
+                assert_eq!(startup.len(), 9);
                 assert!(startup.values().all(serde_json::Value::is_number));
             }
         }
     }
+}
+
+/// Two workers see the same 160-token prompt. Worker 0 holds 128 tokens of it but carries
+/// more queued prefill; worker 1 is idle and cold.
+fn deep_prefix_request() -> (HashMap<u64, TestWorker>, SchedulingRequest) {
+    let (workers, mut request) = fixture(2, 160);
+    request.overlap = Default::default();
+    for (worker, load) in &mut request.worker_loads {
+        *load = Default::default();
+        if worker.worker_id == 0 {
+            load.active_prefill_tokens = 144;
+            request
+                .overlap
+                .tier_overlap_blocks
+                .device
+                .insert(*worker, 8);
+            request
+                .overlap
+                .effective_overlap_blocks
+                .insert(*worker, 8.0);
+            request.overlap.effective_cached_tokens.insert(*worker, 128);
+        }
+    }
+    (workers, request)
+}
+
+#[test]
+fn prefill_context_cost_charges_uncached_tokens_by_prompt_depth() {
+    use dynamo_kv_router::plugins::prelude::*;
+    use serde_json::json;
+
+    let (workers, request) = deep_prefix_request();
+    let config = KvRouterConfig {
+        overlap_score_credit: 1.0,
+        overlap_score_credit_decay: 0.0,
+        prefill_load_scale: 1.0,
+        host_cache_hit_weight: 0.0,
+        disk_cache_hit_weight: 0.0,
+        shared_cache_multiplier: Some(0.0),
+        router_temperature: 0.0,
+        ..Default::default()
+    };
+    let mut policy = default_policy(SelectionConfig::from(&config), "prefill");
+    let select = |policy: &WorkerSelectionPolicy| {
+        policy
+            .select_worker(selection_input(&workers, &request, 16))
+            .unwrap()
+            .worker
+            .worker_id
+    };
+
+    // Token accounting: worker 0 costs (144 + 32 + 128) / 16 - 8 = 11 blocks and worker 1
+    // costs 160 / 16 = 10, so the idle cold worker wins.
+    let initial = policy.runtime_config().unwrap();
+    assert_eq!(initial.parameters()["prefill_context_cost_tokens"], 0.0);
+    assert_eq!(select(&policy), 1);
+
+    // Depth-weighted: worker 0 computes 32 tokens at mean depth 144 (+28.8 tokens) and
+    // worker 1 computes 160 tokens at mean depth 80 (+80 tokens), giving 12.8 against 15
+    // blocks. Recomputing the whole prompt is now the more expensive choice.
+    policy
+        .update_runtime_config(RuntimePolicyUpdate::patch(
+            initial.revision(),
+            json!({"prefill_context_cost_tokens": 160.0})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ))
+        .unwrap();
+    assert_eq!(select(&policy), 0);
+
+    let current = policy.runtime_config().unwrap();
+    assert!(matches!(
+        policy.update_runtime_config(RuntimePolicyUpdate::patch(
+            current.revision(),
+            json!({"prefill_context_cost_tokens": -1.0})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )),
+        Err(RuntimePolicyError::InvalidParameters(_))
+    ));
+
+    policy
+        .update_runtime_config(RuntimePolicyUpdate::reset(current.revision()))
+        .unwrap();
+    assert_eq!(select(&policy), 1);
 }

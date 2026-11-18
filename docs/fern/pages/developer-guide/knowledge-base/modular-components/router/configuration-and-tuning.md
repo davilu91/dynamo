@@ -800,7 +800,8 @@ Use a returned `router_id` and revision in `PATCH /router_policy`:
 The default policy accepts the following finite, non-negative parameters:
 `overlap_score_credit`, `overlap_score_credit_decay`, `prefill_load_scale`,
 `decode_active_request_weight`, `host_cache_hit_weight`, `disk_cache_hit_weight`,
-`shared_cache_multiplier`, and `router_temperature`. These change policy scoring only;
+`shared_cache_multiplier`, `router_temperature`, and `prefill_context_cost_tokens`. These
+change policy scoring only;
 host-owned load accounting and queue settings remain unchanged.
 
 Omitted parameters retain their current values. A parameter set to `null` restores that

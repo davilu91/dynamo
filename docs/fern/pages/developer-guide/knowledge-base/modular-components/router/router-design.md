@@ -85,6 +85,7 @@ The router uses a cost function that combines cache-aware prefill cost, potentia
    - `fetchable_blocks` are the prompt blocks a worker could fetch from a peer through a [KV fetch hint](topology-aware-kv-transfer.md#kv-fetch-hints), beyond the blocks it holds on device, in host memory, or on disk. Only the [`kvcr` policy](configuration-and-tuning.md#worker-selection-policies) credits them; for the default policy they are `0`
    - The combined cache credit is clamped so adjusted prefill blocks cannot become negative
    - `prefill_load_scale` controls adjusted prompt-side load relative to potential decode blocks
+   - `prefill_context_cost_tokens`, a policy parameter that is off by default, adds `uncached_tokens * (cached_tokens + uncached_tokens / 2) / prefill_context_cost_tokens` tokens to the request's own share of `prefill_blocks`, for models whose per-token prefill time grows with prompt depth
    - `decode_active_request_weight` defaults to `0`; use a positive value only when decode step latency depends materially on active batch size
    - Higher overlap credits favor cache reuse (improving TTFT), while lower credits prioritize even load distribution (improving ITL)
 

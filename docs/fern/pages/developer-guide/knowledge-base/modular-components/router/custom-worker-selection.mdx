@@ -721,10 +721,22 @@ worker_selection:
 ```
 
 The provider also accepts `overlap_score_credit_decay`, `decode_active_request_weight`,
-`host_cache_hit_weight`, `disk_cache_hit_weight`, and `shared_cache_multiplier`. The `kvcr`
+`host_cache_hit_weight`, `disk_cache_hit_weight`, `shared_cache_multiplier`, and
+`prefill_context_cost_tokens`. The `kvcr`
 policy takes the same parameters and also credits blocks a worker can copy from a peer at that
 multiplier. Values must be finite and non-negative. Per-request score and temperature
 overrides do not apply to this policy.
+
+`prefill_context_cost_tokens` makes the prefill cost of the request being scored depend on
+prompt depth. With sparse or sliding-window attention, a prefill token takes longer the deeper
+it sits in the prompt, so equal token counts are not equal work. When the value is positive, a
+token at depth `d` counts as `1 + d / prefill_context_cost_tokens` tokens. A request that
+computes `u` uncached tokens after a cached prefix of `p` tokens therefore adds
+`u * (p + u / 2) / prefill_context_cost_tokens` token-equivalents to its prefill load on that
+worker. Set it to the depth at which the measured per-token prefill time doubles, fitted from
+prefill step timings at several context lengths. The default `0` disables the term. Load
+already queued on a worker is still counted in tokens; a configured prefill load estimator
+sets how fast that load drains.
 
 Omitted parameters normally inherit router configuration. When the resolved
 `overlap_score_credit` is nonzero, an omitted shared-cache multiplier uses the router's value,

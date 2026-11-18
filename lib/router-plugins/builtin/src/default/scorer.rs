@@ -31,6 +31,8 @@ pub(super) struct DefaultScorer<const REQUEST_COST: bool, const SHARED_CREDIT: b
     shared_cache_multiplier: f64,
     decode_active_request_weight: f64,
     prefill_load_scale: f64,
+    /// `1 / prefill_context_cost_tokens`, or `None` when the term is disabled.
+    prefill_context_cost_reciprocal: Option<f64>,
     is_decode: bool,
 }
 
@@ -83,7 +85,27 @@ impl<const REQUEST_COST: bool, const SHARED_CREDIT: bool>
             shared_cache_multiplier: config.shared_cache_multiplier,
             decode_active_request_weight: config.decode_active_request_weight,
             prefill_load_scale: config.prefill_load_scale,
+            prefill_context_cost_reciprocal: (config.prefill_context_cost_tokens > 0.0)
+                .then(|| 1.0 / config.prefill_context_cost_tokens),
             is_decode: worker_label == "decode",
+        }
+    }
+
+    /// Extra token-equivalents for computing `uncached` tokens that begin `prefix` tokens into
+    /// the prompt. With sparse or windowed attention the per-token prefill time grows roughly
+    /// linearly with the depth of the token, so a token at depth `d` is charged
+    /// `1 + d / prefill_context_cost_tokens`. Summed over the uncached span this is
+    /// `uncached * (1 + (prefix + uncached / 2) / prefill_context_cost_tokens)`; the function
+    /// returns the part above `uncached`. A disabled term returns exactly zero, which leaves
+    /// the token count and its rounding unchanged.
+    #[inline]
+    fn context_surcharge(&self, uncached: usize, prefix: usize) -> f64 {
+        match self.prefill_context_cost_reciprocal {
+            Some(reciprocal) => {
+                let uncached = uncached as f64;
+                uncached * (prefix as f64 + 0.5 * uncached) * reciprocal
+            }
+            None => 0.0,
         }
     }
 }
@@ -173,14 +195,16 @@ impl<const REQUEST_COST: bool, const SHARED_CREDIT: bool>
             (load.decode_cost_blocks() - credit).max(0.0) + request_cost
         } else {
             let raw_tokens = if !context.tracks_prefill_tokens() {
-                0
+                0.0
             } else if load.is_available() {
                 let uncached = context.isl_tokens().saturating_sub(cached_tokens);
-                (load.active_prefill_tokens() + uncached).saturating_add(cached_tokens)
+                (load.active_prefill_tokens() + uncached).saturating_add(cached_tokens) as f64
+                    + self.context_surcharge(uncached, cached_tokens)
             } else {
-                context.isl_tokens()
+                let uncached = context.isl_tokens();
+                uncached as f64 + self.context_surcharge(uncached, 0)
             };
-            let prefill = (prepared.block_size.divide(raw_tokens as f64) - credit).max(0.0);
+            let prefill = (prepared.block_size.divide(raw_tokens) - credit).max(0.0);
             self.prefill_load_scale * prefill + load.decode_cost_blocks() + request_cost
         };
         let cost = logit * candidate.preferred_taint_multiplier().unwrap_or(1.0);
